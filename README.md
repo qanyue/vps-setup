@@ -16,6 +16,26 @@
 - vim 编辑器优化配置
 - 系统更新和清理
 
+## 设置项说明
+### install.sh
+- SSH: 可选修改端口与 root 密码；不做额外硬化。
+- Fail2ban: 安装并启用，默认保护 22 端口和自定义 SSH 端口。
+- BBR: 写入 `/etc/sysctl.d/99-bbr.conf` 并应用。
+- DNS: 优先配置 systemd-resolved，否则写入 `/etc/resolv.conf`。
+- Swap: 创建或重建 `/swapfile`，支持 auto/自定义大小。
+- 时间同步: 启用 systemd-timesyncd，不回退到 chrony。
+- Vim: 写入 `/etc/vim/vimrc.local` 并在 root 下引用。
+- UFW: 不做管理。
+
+### init.sh
+- SSH: 使用 drop-in 配置，禁用 root 登录；无公钥时保留密码登录；支持保留 22 端口。
+- 防火墙: 禁用 UFW（如存在），生成 nftables 规则并启用。
+- Fail2ban: 写入 `/etc/fail2ban/jail.d/99-sshd.local` 并启用。
+- 用户: 创建用户、加入 sudo，可选免密 sudo。
+- ZRAM/Swap: 配置 zram-tools；创建 `/swapfile` 并写入 `/etc/fstab`。
+- 时间同步: 配置并启用 chrony，屏蔽 systemd-timesyncd。
+- Docker: 可选安装，支持把用户加入 docker 组。
+
 ## 一键脚本
 ```
 apt install curl -y && bash <(curl -fsSL https://raw.githubusercontent.com/yahuisme/vps-setup/main/install.sh)
