@@ -2,9 +2,9 @@
 
 Debian / Ubuntu VPS 初始化脚本。
 
-版本：`v26.09.06`
+版本：`v26.09.10`
 
-支持：Debian 10 – 13、Ubuntu 20.04 - 26.04。
+支持：Debian 10 – 13、Ubuntu LTS 20.04、22.04、24.04、26.04。
 
 ## 一键执行
 
@@ -37,9 +37,9 @@ apt-get update -y && apt-get install -y curl && curl -fsSLo install.sh https://r
 --ip-dns "主DNS 备用DNS"  设置 IPv4 DNS
 --ip6-dns "主DNS 备用DNS" 设置 IPv6 DNS
 --bbr                    启用 BBR
---no-bbr                 禁用 BBR
+--no-bbr                 切换拥塞控制为 cubic
 --fail2ban               启用 Fail2ban，保护 SSH
---no-fail2ban            禁用 Fail2ban
+--no-fail2ban            跳过 Fail2ban 配置（不停止已有服务）
 --ssh-port <port>        设置 SSH 端口
 --ssh-password <pass>    设置 root 密码
 --upgrade                执行系统 full-upgrade
@@ -50,10 +50,14 @@ apt-get update -y && apt-get install -y curl && curl -fsSLo install.sh https://r
 
 ## 注意
 
-- 仅支持完整 VPS / 虚拟机，不支持容器环境。
-- 修改 SSH 端口前，请先放行云平台安全组和防火墙端口。
-- `--ssh-password` 会暴露在 shell 历史和进程参数中，仅建议临时使用。
-- `--swap` 统一接管 Swap：`0` 禁用全部；指定大小时若现有总量不一致，替换为 `/swapfile` 目标大小。
-- Fail2ban 默认永久封禁：SSH 连错 3 次即封来源 IP（仅 `127.0.0.1/8` 与 `::1` 豁免）。
-- `/etc/resolv.conf` 由其他 DNS 管理器维护时会跳过并警告。
-- 日志保存到 `/var/log/vps-init-日期时间.log`。
+- 仅支持完整 VPS / 虚拟机，不支持容器。
+- 更换 SSH 端口前先放行防火墙和安全组。其他配置存在冲突端口或未包含脚本配置时中止，不修改其他 SSH 文件。
+- 修改后保留当前 SSH 连接，另开连接验证。
+- `--ssh-password` 会暴露在 shell 历史和进程参数中，建议交互输入。
+- `--swap 0` 禁用全部 Swap；指定容量与现有总量不一致时统一替换为 `/swapfile`。失败恢复旧文件、启动配置和活动状态。
+- BBR、systemd-resolved 和 Fail2ban 应用或验证失败时恢复原配置；恢复失败会明确报告。
+- Fail2ban 保护最终有效的全部 SSH 端口；`--no-fail2ban` 跳过本次配置，已有服务保持不变。
+- Fail2ban 默认永久封禁：SSH 连错 3 次即封禁，仅豁免 `127.0.0.1/8` 和 `::1`。
+- `/etc/resolv.conf` 由其他 DNS 管理器维护时跳过直接修改。
+- 重启默认否，非交互模式不自动重启。
+- 日志：`/var/log/vps-init-日期时间.log`。

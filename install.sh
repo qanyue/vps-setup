@@ -2,13 +2,13 @@
 
 # ==============================================================================
 # VPS 通用初始化脚本 (适用于 Debian & Ubuntu LTS)
-# 版本: v26.09.06
+# 版本: v26.09.10
 # ==============================================================================
 set -Eeuo pipefail
 
 # --- 默认配置 ---
 # shellcheck disable=SC2034
-SCRIPT_VERSION="v26.09.06"
+SCRIPT_VERSION="v26.09.10"
 TIMEZONE=$(timedatectl show --property=Timezone --value 2>/dev/null || echo "UTC")
 SWAP_SIZE_MB="auto"
 INSTALL_PACKAGES=(sudo curl wget ca-certificates)
@@ -27,7 +27,7 @@ NEW_SSH_PASSWORD=""
 
 # --- 颜色和全局变量 ---
 readonly GREEN=$'\033[0;32m' RED=$'\033[0;31m' YELLOW=$'\033[1;33m'
-readonly BLUE=$'\033[0;34m' CYAN=$'\033[0;36m' BOLD=$'\033[1m' NC=$'\033[0m'
+readonly BOLD=$'\033[1m' NC=$'\033[0m'
 
 non_interactive=false
 LOG_FILE=""
@@ -56,24 +56,24 @@ section_header() {
         text="${number}"
     fi
     log ""
-    log "${CYAN}==> ${BOLD}${text}${NC}"
+    log "${BOLD}${text}${NC}"
 }
 
 print_summary_row() {
     local label="$1" value="$2"
-    printf '  %b•%b %-10s : %s\n' "${CYAN}" "${NC}" "$label" "$value"
+    printf '  %s：%s\n' "$label" "$value"
 }
 
 result_warn() {
-    log "${YELLOW}  ⚠ $1${NC}"
+    printf '  %b⚠%b %s\n' "$YELLOW" "$NC" "$1" >&2
 }
 
 step_info() {
-    log "${BLUE}  ▸ $1${NC}"
+    log "  ▸ $1${NC}"
 }
 
 result_ok() {
-    log "${GREEN}  ✔ $1${NC}"
+    printf '  %b✔%b %s\n' "$GREEN" "$NC" "$1"
 }
 
 
@@ -82,9 +82,9 @@ handle_error() {
     local exit_code=$? line_number=$1
     set +e
 
-    local error_message="\n${RED}✗ [ERROR] 脚本在第 ${line_number} 行失败 (退出码: ${exit_code})${NC}"
+    local error_message="\n${RED}✗ 脚本在第 ${line_number} 行失败 (退出码: ${exit_code})${NC}"
     printf '%b\n' "$error_message"
-    [[ -n "$LOG_FILE" ]] && echo "[ERROR] Script failed at line ${line_number} (exit code: ${exit_code})" >> "$LOG_FILE"
+    [[ -n "$LOG_FILE" ]] && echo "✗ 脚本在第 ${line_number} 行失败（退出码：${exit_code}）" >> "$LOG_FILE"
     exit "$exit_code"
 }
 
@@ -97,9 +97,9 @@ has_ipv6() {
 check_disk_space() {
     local required_mb="$1" available_mb
     available_mb=$(df -BM / | awk 'NR==2 {gsub(/M/,"",$4); print $4}' || echo 0)
-    [[ "$available_mb" -eq 0 ]] && { log "${RED}[ERROR] 无法获取可用磁盘空间信息。${NC}"; return 1; }
+    [[ "$available_mb" -eq 0 ]] && { log "${RED}✗ 无法获取可用磁盘空间信息。${NC}"; return 1; }
     if [[ "$available_mb" -lt "$required_mb" ]]; then
-        log "${RED}[ERROR] 磁盘空间不足: 需要${required_mb}MB，可用${available_mb}MB${NC}"
+        log "${RED}✗ 磁盘空间不足: 需要${required_mb}MB，可用${available_mb}MB${NC}"
         return 1
     fi
 }
@@ -127,17 +127,17 @@ ${BOLD}用法: $0 [选项]${NC}
 ${YELLOW}▸ 核心${NC}
   --hostname <name>        设置主机名
   --timezone <tz>          设置时区
-  --swap <size_mb>         设置 Swap 大小（auto / 0 / MB）
+  --swap <size_mb>         设置 Swap 大小（auto / MB；0 禁用全部）
   --ip-dns <'主 备'>        设置 IPv4 DNS
   --ip6-dns <'主 备'>       设置 IPv6 DNS
 
 ${YELLOW}▸ BBR${NC}
   --bbr                    启用 BBR（默认）
-  --no-bbr                 禁用 BBR
+  --no-bbr                 切换拥塞控制为 cubic
 
 ${YELLOW}▸ 安全${NC}
   --fail2ban               启用 Fail2ban，保护 SSH
-  --no-fail2ban            禁用 Fail2ban
+  --no-fail2ban            跳过 Fail2ban 配置（不停止已有服务）
   --ssh-port <port>        设置 SSH 端口
   --ssh-password <pass>    设置 root 密码
   --upgrade                执行系统 full-upgrade
@@ -193,6 +193,10 @@ ensure_swap_fstab_entry() {
         echo '/swapfile none swap sw 0 0' >> /etc/fstab
 }
 
+valid_ssh_port() {
+    [[ "$1" =~ ^[1-9][0-9]{0,4}$ ]] && (( $1 <= 65535 ))
+}
+
 parse_args() {
 
     while [[ $# -gt 0 ]]; do
@@ -240,7 +244,7 @@ parse_args() {
             --no-fail2ban) ENABLE_FAIL2BAN=false; shift ;;
             --ssh-port)
                 require_value "$@"
-                [[ "$2" =~ ^[0-9]+$ && "$2" -ge 1 && "$2" -le 65535 ]] || { printf '%b\n' "${RED}--ssh-port 必须是 1-65535 的端口${NC}" >&2; exit 2; }
+                valid_ssh_port "$2" || { printf '%b\n' "${RED}--ssh-port 必须是 1-65535 的端口${NC}" >&2; exit 2; }
                 NEW_SSH_PORT="$2"; shift 2 ;;
             --ssh-password) require_value "$@"; NEW_SSH_PASSWORD="$2"; shift 2 ;;
             --upgrade) UPGRADE_SYSTEM=true; shift ;;
@@ -255,7 +259,7 @@ pre_flight_checks() {
     step_info "系统预检查..."
 
     if is_container; then
-        log "${RED}[ERROR] 不支持在容器环境执行，请在完整 VPS 或虚拟机中运行${NC}"
+        log "${RED}✗ 不支持在容器环境执行，请在完整 VPS 或虚拟机中运行${NC}"
         exit 1
     fi
     [[ ! -f /etc/os-release ]] && { log "${RED}错误: 系统信息缺失${NC}"; exit 1; }
@@ -265,9 +269,9 @@ pre_flight_checks() {
     [[ "$ID" = "debian" && "$VERSION_ID" =~ ^(10|11|12|13)$ ]] && supported=true
     [[ "$ID" = "ubuntu" && "$VERSION_ID" =~ ^(20\.04|22\.04|24\.04|26\.04)$ ]] && supported=true
     if [[ "$supported" = "false" ]]; then
-        log "${YELLOW}[WARN] 系统: ${PRETTY_NAME} (建议使用Debian 10-13或Ubuntu 20.04-26.04)${NC}"
+        log "${YELLOW}⚠ 系统: ${PRETTY_NAME} (建议使用Debian 10-13或Ubuntu 20.04-26.04)${NC}"
         if [[ "$non_interactive" = true ]]; then
-            log "${RED}[ERROR] 非交互模式不支持当前系统，已中止${NC}"
+            log "${RED}✗ 非交互模式不支持当前系统，已中止${NC}"
             exit 1
         fi
         read -p "继续? [y/N] " -r < /dev/tty
@@ -289,7 +293,7 @@ configure_hostname() {
     section_header "2" "主机名配置"
     local current_hostname
     current_hostname=$(hostname)
-    log "${BLUE}  当前主机名：${current_hostname}${NC}"
+    log "  当前主机名：${current_hostname}${NC}"
     local final_hostname="$current_hostname"
     if [[ -n "$NEW_HOSTNAME" ]]; then
         if [[ "$NEW_HOSTNAME" =~ ^[a-zA-Z0-9]([a-zA-Z0-9-]*[a-zA-Z0-9])?$ ]]; then
@@ -315,7 +319,7 @@ configure_hostname() {
         fi
         result_ok "主机名设为: ${final_hostname}"
     else
-        log "${BLUE}  主机名保持当前${NC}"
+        log "  主机名保持当前${NC}"
     fi
 }
 
@@ -354,156 +358,145 @@ configure_time_sync() {
     fi
 }
 
-verify_bbr_runtime() {
-    local config_file="$1" current_cc current_qdisc
-    current_cc=$(sysctl -n net.ipv4.tcp_congestion_control 2>/dev/null || echo "")
-    current_qdisc=$(sysctl -n net.core.default_qdisc 2>/dev/null || echo "")
-    if [[ "$current_cc" != "bbr" || "$current_qdisc" != "fq" ]]; then
-        log "${RED}[ERROR] BBR 核心参数未生效: ${current_cc}/${current_qdisc}${NC}"
-        return 1
-    fi
-    result_ok "BBR 核心参数已生效：${current_cc} / ${current_qdisc}"
-    log "${BLUE}  配置文件：${config_file}${NC}"
-}
-
 configure_bbr() {
     section_header "5" "BBR 配置"
-    local config_file="/etc/sysctl.d/99-bbr.conf"
-    
-    if [[ "$ENABLE_BBR" = false ]]; then
-        log "${BLUE}[INFO] BBR 已禁用，将切换拥塞控制为 cubic${NC}"
-        cat > "$config_file" << 'EOF'
-net.ipv4.tcp_congestion_control = cubic
-EOF
-        sysctl -w net.ipv4.tcp_congestion_control=cubic >> "$LOG_FILE" 2>&1 || true
-        sysctl -p "$config_file" >> "$LOG_FILE" 2>&1 || true
-        result_ok "已切换拥塞控制为 cubic"
-        return
+    local config_file="/etc/sysctl.d/99-bbr.conf" backup tmp old_cc old_qdisc target=cubic
+    if [[ "$ENABLE_BBR" = true ]]; then
+        is_kernel_version_ge "4.9" || { result_warn "内核需要 4.9+，未修改 BBR"; return 1; }
+        target=bbr
     fi
-    
-    if ! is_kernel_version_ge "4.9"; then
-        log "${RED}[ERROR] 内核版本过低 ($(uname -r))，需要4.9+${NC}"
+    old_cc=$(sysctl -n net.ipv4.tcp_congestion_control) || return 1
+    old_qdisc=$(sysctl -n net.core.default_qdisc) || return 1
+    backup=$(mktemp -d) || return 1
+    if [[ -e "$config_file" || -L "$config_file" ]]; then
+        cp -a "$config_file" "$backup/config" || { rmdir "$backup"; return 1; }
+    fi
+    tmp=$(mktemp "${config_file}.XXXXXX") || { rm -rf "$backup"; return 1; }
+    if ! { if [[ "$target" = bbr ]]; then printf 'net.core.default_qdisc = fq\n'; fi
+        printf 'net.ipv4.tcp_congestion_control = %s\n' "$target"
+    } > "$tmp" || ! chmod 644 "$tmp" || ! mv -f "$tmp" "$config_file"; then
+        rm -f "$tmp"; rm -rf "$backup"; return 1
+    fi
+    if ! sysctl -p "$config_file" >> "$LOG_FILE" 2>&1 ||
+       [[ "$(sysctl -n net.ipv4.tcp_congestion_control)" != "$target" ]] ||
+       { [[ "$target" = bbr ]] && [[ "$(sysctl -n net.core.default_qdisc)" != fq ]]; }; then
+        if [[ -e "$backup/config" || -L "$backup/config" ]]; then
+            cp -a --remove-destination "$backup/config" "$config_file" || { result_warn "配置恢复失败，备份：$backup"; return 1; }
+        else
+            rm -f "$config_file" || return 1
+        fi
+        if ! sysctl -w "net.ipv4.tcp_congestion_control=$old_cc" "net.core.default_qdisc=$old_qdisc" >> "$LOG_FILE" 2>&1; then
+            result_warn "内核运行参数恢复失败，请检查日志"
+        fi
+        rm -rf "$backup"
+        result_warn "拥塞控制变更失败，已恢复原持久配置"
         return 1
     fi
-    
-    log "${BLUE}仅启用 BBR 核心参数：fq + bbr${NC}"
-    cat > "$config_file" << EOF
-net.core.default_qdisc = fq
-net.ipv4.tcp_congestion_control = bbr
-EOF
-    
-    if ! sysctl -p "$config_file" >> "$LOG_FILE" 2>&1; then
-        result_warn "部分 BBR 参数不受当前内核支持，将继续验证核心参数"
-    fi
-    verify_bbr_runtime "$config_file"
-}
-
-disable_active_swap() {
-    # 关闭全部已激活 Swap；失败时清理 $1（可选临时文件）并返回 1
-    local cleanup_file="${1:-}" active_swap
-    while IFS= read -r active_swap; do
-        [[ -n "$active_swap" ]] || continue
-        if ! swapoff "$active_swap" >> "$LOG_FILE" 2>&1; then
-            [[ -n "$cleanup_file" ]] && rm -f "$cleanup_file"
-            log "${RED}[ERROR] 无法关闭现有 Swap：${active_swap}，保留原配置。${NC}"
-            return 1
-        fi
-    done < <(swapon --show=NAME --noheadings 2>/dev/null)
+    rm -rf "$backup"
+    result_ok "拥塞控制已生效：$target"
 }
 
 remove_fstab_swap_entries() {
-    # 删除 fstab 中所有非注释 swap 条目（含分区与文件 Swap）
     sed -i -E '\|^[[:space:]]*[^#[:space:]][^[:space:]]*[[:space:]]+[^[:space:]]+[[:space:]]+swap([[:space:]]\|$)|d' /etc/fstab
 }
 
 configure_swap() {
     section_header "6" "Swap 配置"
-    if [[ "$SWAP_SIZE_MB" = "0" ]]; then
-        log "${BLUE}  Swap：禁用${NC}"
-        local swap_file="/swapfile"
-        disable_active_swap || return 1
-        rm -f "$swap_file"
-        # --swap 0 means disable all fstab swap entries, not only /swapfile.
-        remove_fstab_swap_entries
-        if [[ -n "$(swapon --show=NAME --noheadings 2>/dev/null)" ]]; then
-            log "${RED}[ERROR] Swap 未能完全禁用。${NC}"
-            return 1
-        fi
-        result_ok "Swap 已禁用并移除"
-        return 0
-    fi
-    local swap_mb
-    if [[ "$SWAP_SIZE_MB" = "auto" ]]; then
+    local swap_file="/swapfile" swap_mb="$SWAP_SIZE_MB" current_total_mb=0 size_bytes swap_line
+    local snapshot active_swap new_swap="" backup old_moved=false new_installed=false failed=false
+    local -a stopped=()
+    snapshot=$(swapon --show=NAME --noheadings --raw) || return 1
+    if [[ "$swap_mb" = auto ]]; then
         local mem_mb
-        mem_mb=$(awk '/MemTotal/ {print int($2/1024)}' /proc/meminfo)
-        if [[ $mem_mb -lt 1024 ]]; then swap_mb=$mem_mb
-        elif [[ $mem_mb -lt 4096 ]]; then swap_mb=2048
+        mem_mb=$(awk '/MemTotal/ {print int($2/1024)}' /proc/meminfo) || return 1
+        if (( mem_mb < 1024 )); then swap_mb=$mem_mb
+        elif (( mem_mb < 4096 )); then swap_mb=2048
         else swap_mb=4096; fi
-        log "${BLUE}  自动计算目标 Swap：${swap_mb}MB${NC}"
-    else
-        swap_mb="$SWAP_SIZE_MB"
-        log "${BLUE}  指定目标 Swap：${swap_mb}MB${NC}"
     fi
-    check_disk_space $((swap_mb + 100)) || return 1
-    local swap_file="/swapfile"
-    local current_total_mb=0 size_bytes
+    local sizes
+    sizes=$(swapon --show=NAME,SIZE --bytes --noheadings --raw) || return 1
     while IFS= read -r swap_line; do
         [[ -n "$swap_line" ]] || continue
-        size_bytes=$(awk '{print $2}' <<< "$swap_line")
-        [[ "$size_bytes" =~ ^[0-9]+$ ]] && current_total_mb=$((current_total_mb + (size_bytes + 524288) / 1048576 ))
-    done < <(swapon --show=NAME,SIZE --bytes --noheadings 2>/dev/null)
-    if [[ "$current_total_mb" -eq "$swap_mb" ]]; then
-        if swapon --show=NAME --noheadings 2>/dev/null | grep -Fxq "$swap_file"; then
-            ensure_swap_fstab_entry
+        size_bytes=${swap_line##* }
+        [[ "$size_bytes" =~ ^[0-9]+$ ]] || return 1
+        current_total_mb=$((current_total_mb + (size_bytes + 524288) / 1048576))
+    done <<< "$sizes"
+    if [[ "$swap_mb" != 0 && "$current_total_mb" -eq "$swap_mb" ]]; then
+        if grep -Fxq "$swap_file" <<< "$snapshot"; then ensure_swap_fstab_entry || return 1; fi
+        result_ok "现有 Swap 与目标一致（${swap_mb}MB），保留"
+        return 0
+    fi
+    [[ ! -L "$swap_file" ]] || { result_warn "拒绝替换符号链接 $swap_file"; return 1; }
+    if [[ "$swap_mb" != 0 ]]; then
+        check_disk_space $((swap_mb + 100)) || return 1
+        new_swap=$(mktemp "${swap_file}.new.XXXXXX") || return 1
+        if ! { fallocate -l "${swap_mb}M" "$new_swap" >> "$LOG_FILE" 2>&1 ||
+            dd if=/dev/zero of="$new_swap" bs=1M count="$swap_mb" status=none >> "$LOG_FILE" 2>&1; } ||
+            ! chmod 600 "$new_swap" || ! mkswap "$new_swap" >> "$LOG_FILE" 2>&1; then
+            rm -f "$new_swap"; return 1
         fi
-        result_ok "现有 Swap 与目标一致（${current_total_mb}MB），保留"
-        return
     fi
-    [[ "$current_total_mb" -gt 0 ]] && log "${YELLOW}  现有 Swap ${current_total_mb}MB 与目标 ${swap_mb}MB 不一致，将统一替换为 /swapfile${NC}"
-    local new_swap="${swap_file}.new.$$"
-    for stale_swap in "${swap_file}.new"*; do
-        [[ -e "$stale_swap" ]] || continue
-        [[ "$stale_swap" = "$new_swap" ]] && continue
-        swapoff "$stale_swap" 2>/dev/null || true
-        rm -f "$stale_swap"
-        if [[ -e "$stale_swap" ]]; then
-            log "${RED}[ERROR] 无法清理遗留的临时 Swap文件: ${stale_swap}${NC}"
-            return 1
+    # 同一文件系统保存旧文件，提交前不删除；只清理本次创建的路径。
+    backup=$(mktemp -d "${swap_file}.backup.XXXXXX") || { [[ -z "$new_swap" ]] || rm -f "$new_swap"; return 1; }
+    if ! cp -a /etc/fstab "$backup/fstab"; then
+        [[ -z "$new_swap" ]] || rm -f "$new_swap"
+        rmdir "$backup"; return 1
+    fi
+    rollback_swap() {
+        local restore_failed=false swap_file_blocked=false item remaining
+        if [[ "$new_installed" = true ]]; then
+            if ! swapoff "$swap_file" >> "$LOG_FILE" 2>&1; then
+                if ! remaining=$(swapon --show=NAME --noheadings --raw) || grep -Fxq "$swap_file" <<< "$remaining"; then
+                    result_warn "新 Swap 无法确认关闭，保留活动文件及备份：$backup"
+                    swap_file_blocked=true
+                    restore_failed=true
+                fi
+            fi
+            if [[ "$swap_file_blocked" = false ]]; then
+                if ! rm -f "$swap_file"; then swap_file_blocked=true; restore_failed=true; fi
+            fi
         fi
-    done
-    # 先创建新文件（旧 Swap 仍在运行，创建失败不影响现状）
-    # 创建阶段失败时也清理临时文件，避免下次运行留下脏状态。
-    # fallocate 不可用或失败（如 overlay 文件系统）时回退 dd。
-    step_info "创建 Swap 文件（fallocate 优先，失败回退 dd）..."
-    if ! { command -v fallocate &>/dev/null && fallocate -l "${swap_mb}M" "$new_swap" >> "$LOG_FILE" 2>&1; } && \
-       ! dd if=/dev/zero of="$new_swap" bs=1M count="$swap_mb" status=none >> "$LOG_FILE" 2>&1; then
-        rm -f "$new_swap"
-        log "${RED}[ERROR] Swap文件创建失败。${NC}"
+        if [[ "$old_moved" = true && "$swap_file_blocked" = false ]]; then
+            if ! mv -f "$backup/swapfile" "$swap_file"; then swap_file_blocked=true; restore_failed=true; fi
+        fi
+        cp -a "$backup/fstab" /etc/fstab || restore_failed=true
+        for item in "${stopped[@]}"; do
+            # 冲突路径不能冒充旧 Swap；fstab 和其他旧 Swap 仍独立恢复。
+            [[ "$item" != "$swap_file" || "$swap_file_blocked" = false ]] || continue
+            swapon "$item" >> "$LOG_FILE" 2>&1 || restore_failed=true
+        done
+        [[ -z "$new_swap" ]] || rm -f "$new_swap"
+        if [[ "$restore_failed" = true ]]; then
+            result_warn "Swap 恢复不完整，请检查日志及备份：$backup"
+        else
+            rm -rf "$backup"
+            result_warn "Swap 变更失败，已恢复旧配置和活动 Swap"
+        fi
         return 1
+    }
+    while IFS= read -r active_swap; do
+        [[ -n "$active_swap" ]] || continue
+        if ! swapoff "$active_swap" >> "$LOG_FILE" 2>&1; then failed=true; break; fi
+        stopped+=("$active_swap")
+    done <<< "$snapshot"
+    if [[ "$failed" = true ]]; then rollback_swap; return 1; fi
+    if [[ -e "$swap_file" ]]; then
+        if ! mv "$swap_file" "$backup/swapfile"; then rollback_swap; return 1; fi
+        old_moved=true
     fi
-    chmod 600 "$new_swap"
-    if ! mkswap "$new_swap" >> "$LOG_FILE" 2>&1; then
-        rm -f "$new_swap"
-        log "${RED}[ERROR] Swap格式化失败。${NC}"
-        return 1
+    if ! remove_fstab_swap_entries; then rollback_swap; return 1; fi
+    if [[ "$swap_mb" != 0 ]]; then
+        if ! mv "$new_swap" "$swap_file"; then rollback_swap; return 1; fi
+        new_installed=true
+        if ! swapon "$swap_file" >> "$LOG_FILE" 2>&1 || ! ensure_swap_fstab_entry; then rollback_swap; return 1; fi
     fi
-    # 新文件就绪后，再关闭全部旧 Swap 并移除 fstab 条目（含分区 Swap）
-    if [[ "$current_total_mb" -gt 0 ]]; then
-        disable_active_swap "$new_swap" || return 1
-        remove_fstab_swap_entries
-        rm -f "$swap_file"
+    local final_swap
+    if ! final_swap=$(swapon --show=NAME --noheadings --raw) ||
+       { [[ "$swap_mb" = 0 ]] && [[ -n "$final_swap" ]]; } ||
+       { [[ "$swap_mb" != 0 ]] && [[ "$final_swap" != "$swap_file" ]]; }; then
+        rollback_swap; return 1
     fi
-    if ! mv -f "$new_swap" "$swap_file"; then
-        rm -f "$new_swap"
-        log "${RED}[ERROR] Swap文件替换失败。${NC}"
-        return 1
-    fi
-    if ! swapon "$swap_file" >> "$LOG_FILE" 2>&1; then
-        rm -f "$swap_file"
-        log "${RED}[ERROR] 新 Swap 启用失败。${NC}"
-        return 1
-    fi
-    ensure_swap_fstab_entry
+    rm -rf "$backup" || return 1
     result_ok "Swap 已配置：${swap_mb}MB"
 }
 
@@ -515,19 +508,47 @@ configure_dns() {
         result_warn "云环境可能覆盖 DNS 配置"
     fi
     if systemctl is-active --quiet systemd-resolved 2>/dev/null; then
-        mkdir -p /etc/systemd/resolved.conf.d
+        mkdir -p /etc/systemd/resolved.conf.d || return 1
         local resolved_file="/etc/systemd/resolved.conf.d/99-custom-dns.conf"
-        local resolved_tmp="${resolved_file}.vps-setup.$$"
-        cat > "$resolved_tmp" << EOF
+        local resolved_tmp resolved_backup
+        resolved_backup=$(mktemp -d) || return 1
+        if [[ -e "$resolved_file" || -L "$resolved_file" ]]; then
+            cp -a "$resolved_file" "$resolved_backup/config" || { rmdir "$resolved_backup"; return 1; }
+        fi
+        resolved_tmp=$(mktemp "${resolved_file}.XXXXXX") || { rm -rf "$resolved_backup"; return 1; }
+        restore_resolved() {
+            if [[ -e "$resolved_backup/config" || -L "$resolved_backup/config" ]]; then
+                cp -a --remove-destination "$resolved_backup/config" "$resolved_file" || { result_warn "恢复失败，备份：$resolved_backup"; return 1; }
+            else
+                rm -f "$resolved_file" || return 1
+            fi
+            if ! systemctl restart systemd-resolved >> "$LOG_FILE" 2>&1 ||
+               ! systemctl is-active --quiet systemd-resolved || ! resolvectl dns >> "$LOG_FILE" 2>&1; then
+                result_warn "原 DNS 服务恢复失败，请检查日志；保留备份：$resolved_backup"
+                return 1
+            fi
+            rm -rf "$resolved_backup"
+        }
+        if ! cat > "$resolved_tmp" << EOF
 [Resolve]
 DNS=${PRIMARY_DNS_V4} ${SECONDARY_DNS_V4}$( [[ "$ipv6_enabled" == true ]] && echo " ${PRIMARY_DNS_V6} ${SECONDARY_DNS_V6}" )
 FallbackDNS=1.0.0.1 8.8.4.4
 EOF
-        mv -f "$resolved_tmp" "$resolved_file"
-        if ! systemctl restart systemd-resolved >> "$LOG_FILE" 2>&1; then
-            log "${RED}[ERROR] systemd-resolved 重启失败，DNS 配置未确认生效${NC}"
+        then
+            rm -f "$resolved_tmp"; rm -rf "$resolved_backup"; return 1
+        fi
+        if ! chmod 644 "$resolved_tmp" || ! mv -f "$resolved_tmp" "$resolved_file"; then
+            rm -f "$resolved_tmp"; rm -rf "$resolved_backup"; return 1
+        fi
+        if ! systemctl restart systemd-resolved >> "$LOG_FILE" 2>&1 ||
+           ! systemctl is-active --quiet systemd-resolved || ! resolvectl dns >/dev/null 2>&1; then
+            restore_resolved
+            result_warn "DNS 重启或验证失败，已尝试恢复原配置"
             return 1
         fi
+        rm -rf "$resolved_backup"
+        result_ok "DNS 配置完成：IPv4 ${PRIMARY_DNS_V4} / ${SECONDARY_DNS_V4}"
+        return 0
     else
         step_info "配置 resolv.conf..."
         if [[ -L /etc/resolv.conf ]]; then
@@ -535,28 +556,31 @@ EOF
             return 0
         fi
         cp -a /etc/resolv.conf "/etc/resolv.conf.backup.$(date +%Y%m%d-%H%M%S).$$" 2>>"$LOG_FILE" || {
-            log "${RED}[ERROR] 无法备份 /etc/resolv.conf，已停止修改。${NC}"
+            log "${RED}✗ 无法备份 /etc/resolv.conf，已停止修改。${NC}"
             return 1
         }
         local resolv_tmp="/etc/resolv.conf.vps-setup.$$"
-        cat > "$resolv_tmp" << EOF
+        if ! cat > "$resolv_tmp" << EOF
 nameserver ${PRIMARY_DNS_V4}
 nameserver ${SECONDARY_DNS_V4}
 $( [[ "$ipv6_enabled" == true ]] && printf 'nameserver %s\nnameserver %s\n' "$PRIMARY_DNS_V6" "$SECONDARY_DNS_V6" )
 EOF
+        then
+            rm -f "$resolv_tmp"; return 1
+        fi
         if ! mv -f "$resolv_tmp" /etc/resolv.conf; then
             rm -f "$resolv_tmp"
-            log "${RED}[ERROR] 无法替换 /etc/resolv.conf${NC}"
+            log "${RED}✗ 无法替换 /etc/resolv.conf${NC}"
             return 1
         fi
     fi
     if command -v resolvectl >/dev/null 2>&1 && systemctl is-active --quiet systemd-resolved 2>/dev/null; then
         resolvectl dns >/dev/null 2>&1 || {
-            log "${RED}[ERROR] 无法验证 systemd-resolved DNS 状态${NC}"
+            log "${RED}✗ 无法验证 systemd-resolved DNS 状态${NC}"
             return 1
         }
     elif [[ ! -s /etc/resolv.conf ]]; then
-        log "${RED}[ERROR] /etc/resolv.conf 为空，DNS 配置未生效${NC}"
+        log "${RED}✗ /etc/resolv.conf 为空，DNS 配置未生效${NC}"
         return 1
     fi
     result_ok "DNS 配置完成：IPv4 ${PRIMARY_DNS_V4} / ${SECONDARY_DNS_V4}$([[ "$ipv6_enabled" = true ]] && echo "，IPv6 已启用")"
@@ -567,17 +591,21 @@ configure_ssh() {
 
     [[ -z "$NEW_SSH_PORT" ]] && [[ "$non_interactive" = false ]] && { read -p "SSH端口 (留空跳过): " -r NEW_SSH_PORT < /dev/tty; }
     
+    if [[ -n "$NEW_SSH_PORT" ]] && ! valid_ssh_port "$NEW_SSH_PORT"; then
+        result_warn "SSH 端口必须是 1-65535 的十进制整数（无前导零）"
+        return 1
+    fi
     if [[ -z "$NEW_SSH_PASSWORD" ]] && [[ "$non_interactive" = false ]]; then
         read -r -s -p "root密码 (输入时不可见, 留空跳过): " NEW_SSH_PASSWORD < /dev/tty
         echo
     fi
     if [[ -n "$NEW_SSH_PASSWORD" ]] && [[ "$non_interactive" = true ]]; then
-        log "${RED}[SECURITY WARNING] 使用 --ssh-password 参数会将密码记录在shell历史中，存在安全风险！${NC}"
+        log "${RED}⚠ 使用 --ssh-password 参数会将密码记录在shell历史中，存在安全风险！${NC}"
     fi
 
     if [[ -n "$NEW_SSH_PORT" || -n "$NEW_SSH_PASSWORD" ]] && ! dpkg -l openssh-server >/dev/null 2>&1; then
         step_info "安装 openssh-server..."
-        DEBIAN_FRONTEND=noninteractive apt-get "${APT_LOCK_WAIT[@]}" install -y openssh-server >> "$LOG_FILE" 2>&1
+        DEBIAN_FRONTEND=noninteractive apt-get "${APT_LOCK_WAIT[@]}" install -y openssh-server >> "$LOG_FILE" 2>&1 || return 1
     fi
 
     local ssh_changed=false ssh_backup="" ssh_dropin="/etc/ssh/sshd_config.d/99-vps-setup.conf"
@@ -593,55 +621,68 @@ configure_ssh() {
         return 1
     }
     rollback_ssh() {
-        if [[ -f "$ssh_backup" ]]; then cp -a "$ssh_backup" "$ssh_dropin"; else rm -f "$ssh_dropin"; fi
-        restart_ssh_service || true
+        if [[ -e "$ssh_backup" || -L "$ssh_backup" ]]; then
+            cp -a --remove-destination "$ssh_backup" "$ssh_dropin" || { result_warn "SSH 恢复失败，备份：$ssh_backup"; return 1; }
+        else
+            rm -f "$ssh_dropin" || return 1
+        fi
+        restart_ssh_service || { result_warn "原 SSH 服务恢复失败，请检查日志"; return 1; }
+        rm -f "$ssh_backup"
     }
     if [[ -n "$NEW_SSH_PORT" || -n "$NEW_SSH_PASSWORD" ]]; then
         if [[ ! -f /etc/ssh/sshd_config ]] || ! command -v sshd >/dev/null 2>&1; then
-            log "${RED}[ERROR] 未找到 SSH 配置或 sshd，无法修改 SSH。${NC}"
+            log "${RED}✗ 未找到 SSH 配置或 sshd，无法修改 SSH。${NC}"
             return 1
         fi
     fi
-    if [[ -n "$NEW_SSH_PORT" && "$NEW_SSH_PORT" =~ ^[0-9]+$ && "$NEW_SSH_PORT" -gt 0 && "$NEW_SSH_PORT" -lt 65536 ]]; then
+    if [[ -n "$NEW_SSH_PORT" ]]; then
         local current_ssh_port
-        current_ssh_port=$(sshd -T 2>/dev/null | awk '$1 == "port" {printf "%s ", $2}')
+        current_ssh_port=$(sshd -T 2>/dev/null | awk '$1 == "port" {printf "%s ", $2}') || return 1
         if [[ " $current_ssh_port " != *" ${NEW_SSH_PORT} "* ]] && ss -H -ltn 2>/dev/null | awk -v port=":${NEW_SSH_PORT}" '$4 ~ port "$" {found=1} END {exit !found}'; then
-            log "${RED}[ERROR] SSH端口 ${NEW_SSH_PORT} 已被其他服务占用，未修改 SSH 配置。${NC}"
+            log "${RED}✗ SSH端口 ${NEW_SSH_PORT} 已被其他服务占用，未修改 SSH 配置。${NC}"
             return 1
         fi
         ssh_backup="${ssh_dropin}.backup.$(date +%Y%m%d-%H%M%S).$$"
-        [[ -f "$ssh_dropin" ]] && cp -a "$ssh_dropin" "$ssh_backup"
-        mkdir -p "${ssh_dropin%/*}"
-        printf 'Port %s\n' "$NEW_SSH_PORT" > "${ssh_dropin}.tmp.$$"
-        mv -f "${ssh_dropin}.tmp.$$" "$ssh_dropin"
+        if [[ -e "$ssh_dropin" || -L "$ssh_dropin" ]]; then cp -a "$ssh_dropin" "$ssh_backup" || return 1; fi
+        mkdir -p "${ssh_dropin%/*}" || return 1
+        if ! printf 'Port %s\n' "$NEW_SSH_PORT" > "${ssh_dropin}.tmp.$$" ||
+           ! mv -f "${ssh_dropin}.tmp.$$" "$ssh_dropin"; then
+            rm -f "${ssh_dropin}.tmp.$$"; return 1
+        fi
         ssh_changed=true
-        result_ok "SSH 端口设为: ${NEW_SSH_PORT}"
+        local effective_ports
+        if ! effective_ports=$(sshd -T 2>>"$LOG_FILE" | awk '$1 == "port" {print $2}' | sort -u) ||
+           [[ "$effective_ports" != "$NEW_SSH_PORT" ]]; then
+            result_warn "SSH 有显式多端口、其他 Port 或缺少 Include；拒绝累加端口。请自行整理配置后重试"
+            rollback_ssh
+            return 1
+        fi
     fi
     
     if [[ "$ssh_changed" = true ]]; then
         if sshd -t 2>>"$LOG_FILE"; then
             if ! restart_ssh_service; then
-                log "${RED}[ERROR] SSH 服务重启失败，正在恢复配置。${NC}"
+                log "${RED}✗ SSH 服务重启失败，正在恢复配置。${NC}"
                 rollback_ssh
                 return 1
             fi
             sleep 1
             if ! ss -H -ltn 2>/dev/null | awk -v port=":${NEW_SSH_PORT}" '$4 ~ port "$" {found=1} END {exit !found}'; then
-                log "${RED}[ERROR] SSH 未监听新端口，正在恢复配置。${NC}"
+                log "${RED}✗ SSH 未监听新端口，正在恢复配置。${NC}"
                 rollback_ssh
                 return 1
             fi
-            log "${YELLOW}[WARN] SSH端口已更改，请用新端口重连！${NC}"
+            result_ok "SSH 已监听端口：${NEW_SSH_PORT}；请保留当前连接并测试新连接"
             rm -f "$ssh_backup"
         else
-            log "${RED}[ERROR] SSH配置错误，已恢复备份${NC}"
+            log "${RED}✗ SSH配置错误，已恢复备份${NC}"
             rollback_ssh
             return 1
         fi
     fi
 
     if [[ -n "$NEW_SSH_PASSWORD" ]]; then
-        echo "root:${NEW_SSH_PASSWORD}" | chpasswd >> "$LOG_FILE" 2>&1
+        echo "root:${NEW_SSH_PASSWORD}" | chpasswd >> "$LOG_FILE" 2>&1 || return 1
         result_ok "root 密码已设置"
     fi
 }
@@ -649,23 +690,20 @@ configure_ssh() {
 configure_fail2ban() {
     section_header "9" "Fail2ban 配置"
     
-    local ports=()
-    [[ -n "$NEW_SSH_PORT" && "$NEW_SSH_PORT" =~ ^[0-9]+$ ]] && ports+=("$NEW_SSH_PORT")
-
-    # Use the effective sshd configuration so includes and drop-ins are honored.
-    if [[ -z "$NEW_SSH_PORT" ]] && command -v sshd >/dev/null 2>&1; then
-        while IFS= read -r detected_port; do
-            [[ "$detected_port" =~ ^[0-9]+$ ]] && ports+=("$detected_port")
-        done < <(sshd -T 2>/dev/null | awk '$1 == "port" {print $2}')
-    fi
-    [[ ${#ports[@]} -gt 0 ]] || ports=("22")
+    local ports=() detected_port effective
+    effective=$(sshd -T 2>>"$LOG_FILE") || { result_warn "无法读取 SSH 有效端口，未修改 Fail2ban"; return 1; }
+    while IFS= read -r detected_port; do
+        valid_ssh_port "$detected_port" || { result_warn "SSH 有效端口无效"; return 1; }
+        ports+=("$detected_port")
+    done < <(awk '$1 == "port" {print $2}' <<< "$effective")
+    [[ ${#ports[@]} -gt 0 ]] || { result_warn "未发现 SSH 有效端口"; return 1; }
 
     local port_list
     port_list=$(printf "%s\n" "${ports[@]}" | sort -un | tr '\n' ',' | sed 's/,$//')
     
     step_info "安装 Fail2ban..."
     if ! DEBIAN_FRONTEND=noninteractive apt-get "${APT_LOCK_WAIT[@]}" install -y fail2ban >> "$LOG_FILE" 2>&1; then
-        log "${RED}[ERROR] Fail2ban 安装失败，请查看日志：${LOG_FILE}${NC}"
+        log "${RED}✗ Fail2ban 安装失败，请查看日志：${LOG_FILE}${NC}"
         return 1
     fi
     
@@ -673,16 +711,23 @@ configure_fail2ban() {
     local jail_tmp="${jail_file}.vps-setup.$$"
     local jail_backup
     jail_backup="${jail_file}.backup.$(date +%Y%m%d-%H%M%S).$$"
-    mkdir -p "${jail_file%/*}"
-    [[ -f "$jail_file" ]] && cp -a "$jail_file" "$jail_backup"
+    mkdir -p "${jail_file%/*}" || return 1
+    if [[ -e "$jail_file" || -L "$jail_file" ]]; then cp -a "$jail_file" "$jail_backup" || return 1; fi
     restore_fail2ban_jail() {
-        if [[ -f "$jail_backup" ]]; then
-            mv -f "$jail_backup" "$jail_file"
+        if [[ -e "$jail_backup" || -L "$jail_backup" ]]; then
+            cp -a --remove-destination "$jail_backup" "$jail_file" || { result_warn "Fail2ban 恢复失败，备份：$jail_backup"; return 1; }
         else
-            rm -f "$jail_file"
+            rm -f "$jail_file" || return 1
         fi
+        if [[ "${1:-}" = restart ]]; then
+            if ! systemctl restart fail2ban >> "$LOG_FILE" 2>&1 || ! systemctl is-active --quiet fail2ban; then
+                result_warn "原 Fail2ban 服务恢复失败，请检查日志；保留备份：$jail_backup"
+                return 1
+            fi
+        fi
+        rm -f "$jail_backup"
     }
-    cat > "$jail_tmp" << EOF
+    if ! cat > "$jail_tmp" << EOF
 [DEFAULT]
 # 永久封禁：输错 SSH 密码达到 maxretry 后，来源 IP 不会自动解封。
 bantime = -1
@@ -695,26 +740,27 @@ ignoreip = 127.0.0.1/8 ::1
 enabled = true
 port = ${port_list}
 EOF
-    mv -f "$jail_tmp" "$jail_file"
+    then
+        rm -f "$jail_tmp"; return 1
+    fi
+    if ! mv -f "$jail_tmp" "$jail_file"; then rm -f "$jail_tmp"; return 1; fi
     if ! fail2ban-client -t >> "$LOG_FILE" 2>&1; then
-        log "${RED}[ERROR] Fail2ban 配置校验失败${NC}"
+        log "${RED}✗ Fail2ban 配置校验失败${NC}"
         restore_fail2ban_jail
         return 1
     fi
     
-    systemctl enable fail2ban >> "$LOG_FILE" 2>&1
-    if ! systemctl restart fail2ban >> "$LOG_FILE" 2>&1; then
-        restore_fail2ban_jail
-        systemctl restart fail2ban >> "$LOG_FILE" 2>&1 || true
-        log "${RED}[ERROR] Fail2ban 重启失败，已恢复原配置。${NC}"
+    if ! systemctl enable fail2ban >> "$LOG_FILE" 2>&1 || ! systemctl restart fail2ban >> "$LOG_FILE" 2>&1; then
+        restore_fail2ban_jail restart || return 1
+        log "${RED}✗ Fail2ban 重启失败，已恢复原配置。${NC}"
         return 1
     fi
-    rm -f "$jail_backup"
-    
-    if (systemctl is-active --quiet fail2ban); then
+    if systemctl is-active --quiet fail2ban; then
+        rm -f "$jail_backup"
         result_ok "Fail2ban 已启动，保护端口：${port_list}"
     else
-        log "${RED}[ERROR] Fail2ban启动失败${NC}"
+        restore_fail2ban_jail restart || return 1
+        log "${RED}✗ Fail2ban 启动失败，已恢复原配置${NC}"
         return 1
     fi
 }
@@ -733,7 +779,7 @@ system_update() {
         result_ok "系统清理完成"
     fi
     if [[ "$UPGRADE_SYSTEM" = false && "$CLEAN_SYSTEM" = false ]]; then
-        log "${BLUE}未请求系统升级或清理，跳过${NC}"
+        log "未请求系统升级或清理，跳过${NC}"
     fi
 }
 
@@ -747,7 +793,7 @@ main() {
     parse_args "$@"
 
     if [[ "$non_interactive" = false && ! -t 0 && ! -t 1 ]]; then
-        log "${RED}[ERROR] 当前没有可用终端，请使用 --non-interactive${NC}"
+        log "${RED}✗ 当前没有可用终端，请使用 --non-interactive${NC}"
         exit 2
     fi
 
@@ -757,7 +803,7 @@ main() {
     print_summary_row "BBR" "$([[ "$ENABLE_BBR" = true ]] && echo "启用 (fq + bbr)" || echo "禁用 (cubic)")"
     print_summary_row "Swap" "$SWAP_SIZE_MB"
     print_summary_row "DNS" "${PRIMARY_DNS_V4} / ${SECONDARY_DNS_V4}"
-    print_summary_row "Fail2ban" "$([[ "$ENABLE_FAIL2BAN" = true ]] && echo "启用" || echo "禁用")"
+    print_summary_row "Fail2ban" "$([[ "$ENABLE_FAIL2BAN" = true ]] && echo "配置 SSH 防护" || echo "跳过配置（保持已有服务）")"
     [[ -n "$NEW_SSH_PORT" ]] && print_summary_row "SSH 端口" "$NEW_SSH_PORT"
     print_summary_row "系统升级" "$([[ "$UPGRADE_SYSTEM" = true ]] && echo "是" || echo "否")"
     print_summary_row "系统清理" "$([[ "$CLEAN_SYSTEM" = true ]] && echo "是" || echo "否")"
@@ -768,9 +814,9 @@ main() {
     fi
     
     LOG_FILE="/var/log/vps-init-$(date +%Y%m%d-%H%M%S).log"
-    echo "VPS Init Log - $(date)" > "$LOG_FILE"
+    echo "VPS 初始化日志 - $(date)" > "$LOG_FILE"
     
-    log "\n${BLUE}开始执行配置...${NC}"
+    log "\n开始执行配置...${NC}"
     SECONDS=0
     
     pre_flight_checks
@@ -783,22 +829,18 @@ main() {
     configure_dns
     
     configure_ssh
-    [[ "$ENABLE_FAIL2BAN" = true ]] && configure_fail2ban
+    if [[ "$ENABLE_FAIL2BAN" = true ]]; then configure_fail2ban; fi
     system_update
     
     section_header "" "完成"
     log "${GREEN}  ✔ VPS 初始化配置全部完成！${NC}"
-    log "  • 执行耗时 : $(format_duration "$SECONDS")"
-    log "  • 日志文件 : ${LOG_FILE}"
+    print_summary_row "执行耗时" "$(format_duration "$SECONDS")"
+    print_summary_row "日志文件" "$LOG_FILE"
     
-    if [[ -n "$NEW_SSH_PORT" ]]; then
-        result_warn "SSH端口已改为 ${NEW_SSH_PORT}，请用新端口重连！"
-    fi
-    
-    log "\n${BLUE}建议重启以确保所有配置生效${NC}"
+    log "\n建议重启以确保所有配置生效${NC}"
     if [[ "$non_interactive" = false ]]; then
-        read -p "立即重启? [Y/n] " -r < /dev/tty
-        [[ ! "$REPLY" =~ ^[Nn]$ ]] && { log "${BLUE}重启中...${NC}"; sleep 2; reboot; }
+        read -p "立即重启? [y/N] " -r < /dev/tty
+        [[ "$REPLY" =~ ^[Yy]$ ]] && { log "重启中...${NC}"; sleep 2; reboot; }
     fi
     
     exit 0
