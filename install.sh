@@ -125,8 +125,8 @@ usage() {
 ${BOLD}用法: $0 [选项]${NC}
 
 ${YELLOW}▸ 核心${NC}
-  --hostname <name>        设置主机名
-  --timezone <tz>          设置时区
+  --hostname <name>        设置主机名（字母、数字、连字符；首尾为字母或数字）
+  --timezone <tz>          设置时区（如 Asia/Hong_Kong；默认当前时区）
   --swap <size_mb>         设置 Swap 大小（auto / MB；0 禁用全部）
   --ip-dns <'主 备'>        设置 IPv4 DNS
   --ip6-dns <'主 备'>       设置 IPv6 DNS
@@ -138,7 +138,7 @@ ${YELLOW}▸ BBR${NC}
 ${YELLOW}▸ 安全${NC}
   --fail2ban               启用 Fail2ban，保护 SSH
   --no-fail2ban            跳过 Fail2ban 配置（不停止已有服务）
-  --ssh-port <port>        设置 SSH 端口
+  --ssh-port <port>        设置 SSH 端口（1-65535，无前导零）
   --ssh-password <pass>    设置 root 密码
   --upgrade                执行系统 full-upgrade
   --cleanup                执行 autoremove 和 apt clean
@@ -146,6 +146,12 @@ ${YELLOW}▸ 安全${NC}
 ${YELLOW}▸ 其他${NC}
   -h, --help               显示帮助
   --non-interactive        非交互模式
+
+默认：保留主机名、时区和 SSH 设置；交互模式另行询问主机名和 SSH。
+启用 BBR、Fail2ban；Swap 使用 auto，容量不一致时替换全部现有 Swap。
+DNS 默认 IPv4：1.1.1.1 / 8.8.8.8；IPv6：2606:4700:4700::1111 / 2001:4860:4860::8888。
+DNS 参数须用引号包含两个地址；仅检测到 IPv6 时配置 IPv6 DNS。
+非交互模式仍执行默认初始化项目，不是仅执行显式指定的选项。
 
 ${GREEN}示例: $0 --bbr --ssh-port 2222${NC}
 EOF
@@ -303,11 +309,13 @@ configure_hostname() {
     elif [[ "$non_interactive" = false ]]; then
         read -p "修改主机名? [y/N] " -r < /dev/tty
         if [[ "$REPLY" =~ ^[Yy]$ ]]; then
-            read -r -p "输入新主机名: " new_name < /dev/tty
+            read -r -p "新主机名（留空保持当前）: " new_name < /dev/tty
             if [[ -n "$new_name" && "$new_name" =~ ^[a-zA-Z0-9]([a-zA-Z0-9-]*[a-zA-Z0-9])?$ ]]; then
                 hostnamectl set-hostname "$new_name" >> "$LOG_FILE" 2>&1
                 final_hostname="$new_name"
                 NEW_HOSTNAME="$new_name"
+            elif [[ -n "$new_name" ]]; then
+                result_warn "主机名仅限字母、数字和连字符，首尾须为字母或数字；保持当前：${current_hostname}"
             fi
         fi
     fi
@@ -602,7 +610,7 @@ EOF
 configure_ssh() {
     section_header "8" "SSH 配置"
 
-    [[ -z "$NEW_SSH_PORT" ]] && [[ "$non_interactive" = false ]] && { read -p "SSH端口 (留空跳过): " -r NEW_SSH_PORT < /dev/tty; }
+    [[ -z "$NEW_SSH_PORT" ]] && [[ "$non_interactive" = false ]] && { read -p "SSH端口 (留空保持当前): " -r NEW_SSH_PORT < /dev/tty; }
     
     if [[ -n "$NEW_SSH_PORT" ]] && ! valid_ssh_port "$NEW_SSH_PORT"; then
         result_warn "SSH 端口必须是 1-65535 的十进制整数（无前导零）"
