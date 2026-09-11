@@ -379,6 +379,7 @@ configure_bbr() {
     if [[ -e "$config_file" || -L "$config_file" ]]; then
         cp -a "$config_file" "$backup/config" || { rmdir "$backup"; return 1; }
     fi
+    printf '%s\n' "net.ipv4.tcp_congestion_control=$old_cc" "net.core.default_qdisc=$old_qdisc" > "$backup/runtime" || { rm -rf "$backup"; return 1; }
     tmp=$(mktemp "${config_file}.XXXXXX") || { rm -rf "$backup"; return 1; }
     if ! { if [[ "$target" = bbr ]]; then printf 'net.core.default_qdisc = fq\n'; fi
         printf 'net.ipv4.tcp_congestion_control = %s\n' "$target"
@@ -388,16 +389,22 @@ configure_bbr() {
     if ! sysctl -p "$config_file" >> "$LOG_FILE" 2>&1 ||
        [[ "$(sysctl -n net.ipv4.tcp_congestion_control)" != "$target" ]] ||
        { [[ "$target" = bbr ]] && [[ "$(sysctl -n net.core.default_qdisc)" != fq ]]; }; then
+        local restore_failed=false
         if [[ -e "$backup/config" || -L "$backup/config" ]]; then
-            cp -a --remove-destination "$backup/config" "$config_file" || { result_warn "配置恢复失败，备份：$backup"; return 1; }
+            cp -a --remove-destination "$backup/config" "$config_file" || restore_failed=true
         else
-            rm -f "$config_file" || return 1
+            rm -f "$config_file" || restore_failed=true
         fi
         if ! sysctl -w "net.ipv4.tcp_congestion_control=$old_cc" "net.core.default_qdisc=$old_qdisc" >> "$LOG_FILE" 2>&1; then
             result_warn "内核运行参数恢复失败，请检查日志"
+            restore_failed=true
         fi
-        rm -rf "$backup"
-        result_warn "拥塞控制变更失败，已恢复原持久配置"
+        if [[ "$restore_failed" = true ]]; then
+            result_warn "拥塞控制恢复不完整，请检查日志及备份：$backup"
+        else
+            rm -rf "$backup"
+            result_warn "拥塞控制变更失败，已恢复原持久配置"
+        fi
         return 1
     fi
     rm -rf "$backup"
@@ -561,8 +568,47 @@ EOF
         if ! chmod 644 "$resolved_tmp" || ! mv -f "$resolved_tmp" "$resolved_file"; then
             rm -f "$resolved_tmp"; rm -rf "$resolved_backup"; return 1
         fi
+        local expected_dns="$PRIMARY_DNS_V4 $SECONDARY_DNS_V4" actual_dns
+        [[ "$ipv6_enabled" != true ]] || expected_dns+=" $PRIMARY_DNS_V6 $SECONDARY_DNS_V6"
+        verify_resolved_dns() {
+            actual_dns=$(LC_ALL=C SYSTEMD_COLORS=0 resolvectl dns 2>>"$LOG_FILE") || return 1
+            # 仅核对 Global（含折行），忽略 Link；地址按集合比较，IPv6 展开后比较。
+            awk -v expected="$expected_dns" '
+                function normalize(ip, halves, left, right, n, m, i, out) {
+                    ip = tolower(ip)
+                    if (ip !~ /^[0-9a-f:.]+$/) return ip
+                    if (index(ip, ":")) {
+                        split(ip, halves, "::")
+                        n = split(halves[1], left, ":")
+                        m = split(halves[2], right, ":")
+                        if (index(ip, "::")) {
+                            for (i = n + 1; i <= 8 - m; i++) left[i] = "0"
+                            for (i = 1; i <= m; i++) left[8 - m + i] = right[i]
+                            n = 8
+                        }
+                        for (i = 1; i <= n; i++) {
+                            sub(/^0+/, "", left[i])
+                            out = out ":" (left[i] == "" ? "0" : left[i])
+                        }
+                        return out
+                    }
+                    n = split(ip, left, ".")
+                    for (i = 1; i <= n; i++) out = out "." (left[i] + 0)
+                    return out
+                }
+                BEGIN { n = split(expected, a); for (i = 1; i <= n; i++) want[normalize(a[i])] = 1 }
+                /^[^[:space:]]/ { global = 0 }
+                /^Global:/ { global = 1; seen = 1; sub(/^Global:[[:space:]]*/, "") }
+                global { for (i = 1; i <= NF; i++) got[normalize($i)] = 1 }
+                END {
+                    if (!seen) exit 1
+                    for (ip in want) if (!(ip in got)) exit 1
+                    for (ip in got) if (!(ip in want)) exit 1
+                }
+            ' <<< "$actual_dns"
+        }
         if ! systemctl restart systemd-resolved >> "$LOG_FILE" 2>&1 ||
-           ! systemctl is-active --quiet systemd-resolved || ! resolvectl dns >/dev/null 2>&1; then
+           ! systemctl is-active --quiet systemd-resolved || ! verify_resolved_dns; then
             restore_resolved
             result_warn "DNS 重启或验证失败，已尝试恢复原配置"
             return 1
