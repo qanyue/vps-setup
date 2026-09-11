@@ -2,13 +2,13 @@
 
 # ==============================================================================
 # VPS 通用初始化脚本 (适用于 Debian & Ubuntu LTS)
-# 版本: v26.09.10
+# 版本: v26.09.11
 # ==============================================================================
 set -Eeuo pipefail
 
 # --- 默认配置 ---
 # shellcheck disable=SC2034
-SCRIPT_VERSION="v26.09.10"
+SCRIPT_VERSION="v26.09.11"
 TIMEZONE=$(timedatectl show --property=Timezone --value 2>/dev/null || echo "UTC")
 SWAP_SIZE_MB="auto"
 INSTALL_PACKAGES=(sudo curl wget ca-certificates)
@@ -393,7 +393,8 @@ configure_bbr() {
         return 1
     fi
     rm -rf "$backup"
-    result_ok "拥塞控制已生效：$target"
+    result_ok "拥塞控制已生效：$target$([[ "$target" = bbr ]] && echo ' / fq')"
+    print_summary_row "配置文件" "$config_file"
 }
 
 remove_fstab_swap_entries() {
@@ -425,6 +426,14 @@ configure_swap() {
         if grep -Fxq "$swap_file" <<< "$snapshot"; then ensure_swap_fstab_entry || return 1; fi
         result_ok "现有 Swap 与目标一致（${swap_mb}MB），保留"
         return 0
+    fi
+    if [[ "$swap_mb" = 0 ]]; then
+        result_warn "将禁用全部 Swap（含分区），移除 Swap 启动条目及 /swapfile"
+    else
+        step_info "Swap 目标：${swap_mb}MB；当前：${current_total_mb}MB"
+        if [[ "$current_total_mb" -gt 0 ]]; then
+            result_warn "容量不一致，将停用全部现有 Swap（含分区），统一替换为 /swapfile"
+        fi
     fi
     [[ ! -L "$swap_file" ]] || { result_warn "拒绝替换符号链接 $swap_file"; return 1; }
     if [[ "$swap_mb" != 0 ]]; then
@@ -497,7 +506,11 @@ configure_swap() {
         rollback_swap; return 1
     fi
     rm -rf "$backup" || return 1
-    result_ok "Swap 已配置：${swap_mb}MB"
+    if [[ "$swap_mb" = 0 ]]; then
+        result_ok "全部 Swap 已禁用，Swap 启动条目及 /swapfile 已移除"
+    else
+        result_ok "Swap 已配置：${swap_mb}MB（/swapfile）"
+    fi
 }
 
 configure_dns() {
@@ -547,7 +560,7 @@ EOF
             return 1
         fi
         rm -rf "$resolved_backup"
-        result_ok "DNS 配置完成：IPv4 ${PRIMARY_DNS_V4} / ${SECONDARY_DNS_V4}"
+        result_ok "DNS 配置完成：IPv4 ${PRIMARY_DNS_V4} / ${SECONDARY_DNS_V4}$([[ "$ipv6_enabled" = true ]] && echo "，IPv6 ${PRIMARY_DNS_V6} / ${SECONDARY_DNS_V6}")"
         return 0
     else
         step_info "配置 resolv.conf..."
@@ -583,7 +596,7 @@ EOF
         log "${RED}✗ /etc/resolv.conf 为空，DNS 配置未生效${NC}"
         return 1
     fi
-    result_ok "DNS 配置完成：IPv4 ${PRIMARY_DNS_V4} / ${SECONDARY_DNS_V4}$([[ "$ipv6_enabled" = true ]] && echo "，IPv6 已启用")"
+    result_ok "DNS 配置完成：IPv4 ${PRIMARY_DNS_V4} / ${SECONDARY_DNS_V4}$([[ "$ipv6_enabled" = true ]] && echo "，IPv6 ${PRIMARY_DNS_V6} / ${SECONDARY_DNS_V6}")"
 }
 
 configure_ssh() {
@@ -637,6 +650,7 @@ configure_ssh() {
     fi
     if [[ -n "$NEW_SSH_PORT" ]]; then
         local current_ssh_port
+        result_warn "请先在防火墙和安全组放行 TCP ${NEW_SSH_PORT}，保留当前 SSH 连接"
         current_ssh_port=$(sshd -T 2>/dev/null | awk '$1 == "port" {printf "%s ", $2}') || return 1
         if [[ " $current_ssh_port " != *" ${NEW_SSH_PORT} "* ]] && ss -H -ltn 2>/dev/null | awk -v port=":${NEW_SSH_PORT}" '$4 ~ port "$" {found=1} END {exit !found}'; then
             log "${RED}✗ SSH端口 ${NEW_SSH_PORT} 已被其他服务占用，未修改 SSH 配置。${NC}"
@@ -757,7 +771,7 @@ EOF
     fi
     if systemctl is-active --quiet fail2ban; then
         rm -f "$jail_backup"
-        result_ok "Fail2ban 已启动，保护端口：${port_list}"
+        result_ok "Fail2ban 已启动，保护 SSH 端口：${port_list}；5 分钟内失败 3 次永久封禁"
     else
         restore_fail2ban_jail restart || return 1
         log "${RED}✗ Fail2ban 启动失败，已恢复原配置${NC}"
@@ -801,9 +815,9 @@ main() {
     print_summary_row "主机名" "${NEW_HOSTNAME:-保持当前}"
     print_summary_row "时区" "$TIMEZONE"
     print_summary_row "BBR" "$([[ "$ENABLE_BBR" = true ]] && echo "启用 (fq + bbr)" || echo "禁用 (cubic)")"
-    print_summary_row "Swap" "$SWAP_SIZE_MB"
-    print_summary_row "DNS" "${PRIMARY_DNS_V4} / ${SECONDARY_DNS_V4}"
-    print_summary_row "Fail2ban" "$([[ "$ENABLE_FAIL2BAN" = true ]] && echo "配置 SSH 防护" || echo "跳过配置（保持已有服务）")"
+    print_summary_row "Swap" "$([[ "$SWAP_SIZE_MB" = auto ]] && echo '按内存自动配置' || { [[ "$SWAP_SIZE_MB" = 0 ]] && echo '禁用全部（含分区）' || echo "${SWAP_SIZE_MB}MB"; })"
+    print_summary_row "DNS" "IPv4 ${PRIMARY_DNS_V4} / ${SECONDARY_DNS_V4}$(has_ipv6 && echo "，IPv6 ${PRIMARY_DNS_V6} / ${SECONDARY_DNS_V6}")"
+    print_summary_row "Fail2ban" "$([[ "$ENABLE_FAIL2BAN" = true ]] && echo "SSH 防护：5 分钟内失败 3 次永久封禁" || echo "跳过配置（保持已有服务）")"
     [[ -n "$NEW_SSH_PORT" ]] && print_summary_row "SSH 端口" "$NEW_SSH_PORT"
     print_summary_row "系统升级" "$([[ "$UPGRADE_SYSTEM" = true ]] && echo "是" || echo "否")"
     print_summary_row "系统清理" "$([[ "$CLEAN_SYSTEM" = true ]] && echo "是" || echo "否")"
